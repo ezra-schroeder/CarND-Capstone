@@ -14,8 +14,12 @@ import yaml
 
 import math
 
-MAX_DECEL = 0.05
-MAX_ACCEL = 2.0
+# MAX_DECEL = 0.05
+#MAX_ACCEL = 2.0
+
+MAX_DECEL = 2.0 # m/s/s
+MAX_ACCEL = 1.0 # m/s/s
+
 
 '''
 This node will publish waypoints from the car's current position to some `x` distance ahead.
@@ -308,12 +312,27 @@ class WaypointUpdater(object):
 
         last = waypoints[-1]
         last.twist.twist.linear.x = 0.
+
+        i_ = 0
+        vel = 0
+
         for wp in waypoints[:-1][::-1]:
             dist = self.distance(wp.pose.pose.position, last.pose.pose.position)
+
+            if dist >6. :
+                weight = 1/np.exp(dist**2)
+                vel = self.current_velocity*weight
+                vel = vel + MAX_DECEL*0.1 
+            '''  
             vel = math.sqrt(2 * MAX_DECEL * dist)
             if vel < 1.:
                 vel = 0.
+            '''
             wp.twist.twist.linear.x = min(vel, wp.twist.twist.linear.x)
+
+            print i_, ":", dist, vel, wp.twist.twist.linear.x
+            i_ = i_ +1
+
         return waypoints
 
     def accelerate(self, waypoints):
@@ -332,9 +351,12 @@ class WaypointUpdater(object):
         #rospy.loginfo("[accelerate] current velocity: %f", vel)
         for wp in waypoints[:]:
             dist = self.distance(wp.pose.pose.position, start_pos.pose.pose.position)
-            vel = math.sqrt(vel**2 + (2 * MAX_ACCEL * dist))
-            if vel < 1.0:
-                vel = 1.0
+            #vel = math.sqrt(vel**2 + (2 * MAX_ACCEL * dist))
+            #if vel < 1.0:
+            #    vel = 1.0
+
+            vel = vel + MAX_ACCEL*0.1
+
             wp.twist.twist.linear.x = vel
             if vel > self.velocity:
                 vel = self.velocity
@@ -674,6 +696,18 @@ class WaypointUpdater(object):
 
         rospy.logwarn('[traffic_cb] traffict ligth: %s', self.red_tl)
         next_tl = msg.data
+        dist = -1.0
+        if self.next_pt >= 0 and next_tl >= 0:
+            sz = len(self.wps)
+            dist = self.wp_ss[next_tl] - self.wp_ss[self.next_pt]
+            if dist < 0:
+                dist += self.wp_ss[sz]
+
+        if dist < 50: 
+            self.tl_distance_pub.publish(dist)
+
+
+        ''' 
         sgn = 1
         if next_tl < 0:
             sgn = -1
@@ -687,13 +721,13 @@ class WaypointUpdater(object):
                     dist += self.wp_ss[sz]
                 else:
                     dist = 0
-
+        '''
         # Output: distance to next light.  If output is positive,
         # it means that the next light is red.  If distance is negative,
         # it means that the next light is NOT red, and abs(distance)
         # gives the distance to this non-red light.
-        self.tl_distance_pub.publish(sgn*dist)
-        #self.red_tl = True if sgn*dist > 0 else False
+        # self.tl_distance_pub.publish(sgn*dist)
+        # self.red_tl = True if sgn*dist > 0 else False
         # print("ds", dist)
        
 

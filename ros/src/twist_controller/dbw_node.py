@@ -5,11 +5,15 @@ from std_msgs.msg import Bool, Float32
 from dbw_mkz_msgs.msg import ThrottleCmd, SteeringCmd, BrakeCmd, SteeringReport
 from geometry_msgs.msg import TwistStamped
 import math
+from math import fabs
 
 from twist_controller import Controller
 from yaw_controller import YawController
 from lowpass import LowPassFilter
 import pid
+
+SPEED_THRESHOLD = 4. # low speed cut off
+
 
 '''
 You can build this node only after you have built (or partially built) the `waypoint_updater` node.
@@ -45,16 +49,16 @@ class DBWNode(object):
         rospy.init_node('dbw_node')
         rospy.loginfo("initing dbw_node")
 
-        vehicle_mass = rospy.get_param('~vehicle_mass', 1736.35)
-        fuel_capacity = rospy.get_param('~fuel_capacity', 13.5)
+        self.vehicle_mass = rospy.get_param('~vehicle_mass', 1736.35)
+        self.fuel_capacity = rospy.get_param('~fuel_capacity', 13.5)
         self.brake_deadband = rospy.get_param('~brake_deadband', .1)
-        decel_limit = rospy.get_param('~decel_limit', -5)
-        accel_limit = rospy.get_param('~accel_limit', 1.)
-        wheel_radius = rospy.get_param('~wheel_radius', 0.2413)
-        wheel_base = rospy.get_param('~wheel_base', 2.8498)
-        steer_ratio = rospy.get_param('~steer_ratio', 14.8)
-        max_lat_accel = rospy.get_param('~max_lat_accel', 3.)
-        max_steer_angle = rospy.get_param('~max_steer_angle', 8.)
+        self.decel_limit = rospy.get_param('~decel_limit', -5)
+        self.accel_limit = rospy.get_param('~accel_limit', 1.)
+        self.wheel_radius = rospy.get_param('~wheel_radius', 0.2413)
+        self.wheel_base = rospy.get_param('~wheel_base', 2.8498)
+        self.steer_ratio = rospy.get_param('~steer_ratio', 14.8)
+        self.max_lat_accel = rospy.get_param('~max_lat_accel', 3.)
+        self.max_steer_angle = rospy.get_param('~max_steer_angle', 8.)
 
         self.steer_pub = rospy.Publisher('/vehicle/steering_cmd',
                                          SteeringCmd, queue_size=1)
@@ -65,7 +69,7 @@ class DBWNode(object):
 
         # self.prev_steer_val = None
         # self.prev_steer_val_set = False
-        # self.tl_distance = -1
+        self.tl_distance = -1
         # self.prev_tl_distance = -1
         # self.red_tl = True
         # self.tl_count = 0
@@ -87,11 +91,23 @@ class DBWNode(object):
         self.steer_filter = LowPassFilter(.2, .90)
         self.p_v = [1.187355162, 0.044831144, 0.00295747]
         self.pidv = pid.PID(self.p_v[0], self.p_v[1], self.p_v[2])
+
+        # full stop at first red light, brake weight at 100000
+        # self.pida = pid.PID(0.5, 0.08, 0.00, mn = -0.10, mx = 1.0)
+        self.pida = pid.PID(1.850, 0.08, 0.00, mn = -0.00, mx = 1.0)
         self.throttle = 0.
+        self.brake = 0.
+        self.current_acceleration = 0.
+        self.accel_tau = 0.5
+        self.lp_throttle = LowPassFilter(self.accel_tau, 0.1)
+        self.current_velocity = None
+        self.current_angular_velocity = None
+        self.brake_weight = 100000.0
+
         min_speed = .01
         # At high speeds, a multiple of 1.2 seems to work a bit
         # better than 1.0
-        self.yaw_controller = YawController(wheel_base, 1.2*steer_ratio, min_speed, 8*max_lat_accel, max_steer_angle)
+        self.yaw_controller = YawController(self.wheel_base, 1.2*self.steer_ratio, SPEED_THRESHOLD, 8*self.max_lat_accel, self.max_steer_angle)
 
         self.loop()
 
@@ -113,7 +129,7 @@ class DBWNode(object):
         float64 z
     '''
     def tl_distance_cb(self, msg):
-        # self.tl_distance = msg.data
+        self.tl_distance = msg.data
         # if self.prev_tl_distance == msg.data == -1:
         #     self.tl_count += 1 % 1000
         #     if self.tl_count > 10: self.red_tl = False
@@ -121,7 +137,7 @@ class DBWNode(object):
         #     self.tl_count = 0
         #     self.prev_tl_distance = msg.data
         #     self.red_tl = True
-        pass
+        # pass
 
 
     def twist_cmd_cb(self, msg):
@@ -133,12 +149,36 @@ class DBWNode(object):
         #     vtwist = self.twist_velocity_filter.filt(0.1)
         # else:
         vtwist = self.twist_velocity_filter.filt(x)
-        # calculate error between desired velocity and current velocity
-        
 
+        # calculate error between desired velocity and current velocity
         e = vtwist - self.velocity_filter.get()
+
         # feed pid controller with a dt of 0.033
-        self.throttle = self.pidv.step(e, 0.033)
+        #self.throttle = self.pidv.step(e, 0.1)
+        throttle_ = self.pidv.step(e, 0.1)
+  
+        # total mass includes gross vehicle mass, fuel and payloads
+        total_mass = self.vehicle_mass + self.fuel_capacity*2.858 + 500.0
+
+        if (vtwist<=0.05) and (self.tl_distance < 3.0):
+            throttle_ = min(throttle_, -1.0 / total_mass / self.wheel_radius)
+        elif (vtwist < SPEED_THRESHOLD):
+            vtwist = SPEED_THRESHOLD 
+            
+        if (throttle_ >=0.0) :
+            self.throttle = self.pida.step(throttle_-self.current_acceleration, 0.1)
+        else:
+            self.pida.reset()
+            self.throttle = -0.0
+
+        if (self.throttle < fabs(self.brake_deadband)) or (vtwist < SPEED_THRESHOLD) or ((self.tl_distance-5.) < 30.0) :
+            self.brake = -total_mass*self.wheel_radius*self.brake_weight*(self.tl_distance-5.)**2
+        else:
+            self.brake = 0.0
+            
+
+
+
         if msg.header.seq%5 == 0:
             ts = msg.header.stamp.secs + 1.e-9*msg.header.stamp.nsecs
             # rospy.loginfo("tcc %d %f %f  %f %f", seq, ts, x, yaw, self.twist_yaw_filter.get())
@@ -166,6 +206,16 @@ class DBWNode(object):
         # self.filtered_velocity = factor*self.filtered_velocity + (1-factor)*x
         self.angular_velocity_filter.filt(yaw)
         self.velocity_filter.filt(x)
+
+        if self.current_velocity is not None:
+            accel = (self.current_velocity - msg.twist.linear.x)/0.1
+            self.lp_throttle.filt(accel)
+            self.current_acceleration = self.lp_throttle.get()
+            #print "current acceleration ", self.current_acceleration
+        self.current_velocity = msg.twist.linear.x
+        self.current_angular_velocity = msg.twist.angular.z        
+
+
 
         if msg.header.seq%5 == 0:
             ts = msg.header.stamp.secs + 1.e-9*msg.header.stamp.nsecs
@@ -219,7 +269,7 @@ class DBWNode(object):
                 # rospy.loginfo("throttle: %f brake: %f steering angle: %f " % (throttle, brake , steer))
                 # throttle is 0.35, which runs the car at about 40 mph.
                 # throttle of 0.98 will run the car at about 115 mph.
-                self.publish(throttle, brake, steer)
+                self.publish(self.throttle, self.brake, steer)
             rate.sleep()
 
     def publish(self, throttle, brake, steer):
