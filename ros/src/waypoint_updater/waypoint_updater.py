@@ -142,6 +142,8 @@ class WaypointUpdater(object):
         self.prev_pose = None
         self.accel_wps = []
         self.decel_wps = []
+        
+        self.xy = [] 
 
         self.velocity = rospy.get_param('velocity') * 1000. / (60. * 60.)
         ## calculate stopping distance based on allowed max velocity
@@ -652,8 +654,53 @@ class WaypointUpdater(object):
 
     # takes styx_msgs/PoseStamp
     # returns i value of nearest waypoint in self.wps
-    def nearest_waypoint(self, pose):
-        ppt = pose_to_point(pose)
+    '''def nearest_waypoint(self, pose):
+        
+        q = pose_to_point(pose) 
+        q = np.array((q.x, q.y)) 
+        w = np.array(self.wps) 
+        return ((w - q)**2).argmin(axis=1) '''
+
+
+    # note to self: nearest_waypoint .... takes PoseStamped msg 
+    def nearest_waypoint(self, msg): #, point):
+        # self.xy needs to be a numpy array containing all the xy-coordinates of all waypoints 
+        #q = self.xy * (msg.pose.pose.position.x, msg.pose.pose.position.y) 
+        #q = self.xy * (msg.position.x, msg.position.y)  
+        if not self.xy: # == []: # it doesn't make sense to be finding the nearest waypoint when we haven't seen any waypoints or else we aleady would have extracted their xy-coordinates into a numpy array
+            return -1 
+        #q = self.xy * (msg.pose.x, msg.pose.y)
+        q = self.xy - (msg.pose.position.x, msg.pose.position.y)
+        index_of_first_minimum_xy = (q ** 2).sum(axis=1).argmin() 
+        return index_of_first_minimum_xy 
+            
+        
+    '''def waypoints_to_xy_list_cb(self, msg):
+        if len(self.xy) != 0:
+            return  
+        for waypoint in msg.waypoints: 
+            self.xy.append((waypoint.pose.pose.position.x, waypoint.pose.pose.position.y))
+        #print (self.xy) 
+        
+        self.xy = np.array(self.xy)
+        
+        return  '''
+    
+    def waypoints_to_xy_list(self, msg):
+        if len(self.xy) != 0: # we already turned the waypoints list into a list of xy-coordinates 
+            return  
+        for waypoint in msg: #.waypoints: 
+            self.xy.append((waypoint.pose.pose.position.x, waypoint.pose.pose.position.y))
+        #print (self.xy) 
+        
+        self.xy = np.array(self.xy)
+        
+        return  
+    
+        
+        
+        
+        '''ppt = pose_to_point(pose)
         prev_dist = point_dist_sq(ppt, self.prev_pt)
         # tested for speeds up to 115 mph
         wp_ahead = 200
@@ -677,7 +724,7 @@ class WaypointUpdater(object):
         if mini == rg[0] or mini == rg[-1]:
             rospy.logwarn("nearest endpoint at end of range: %d %d %d", mini, rg[0], rg[-1])
             self.prev_index = -1
-        return mini
+        return mini'''
 
     # takes styx_msgs/PoseStamp
     # returns i value of next waypoint in self.wps
@@ -816,6 +863,8 @@ class WaypointUpdater(object):
             return
         
         self.wps = waypoints.waypoints
+        self.xy = self.waypoints_to_xy_list(self.wps)
+        #waypoints_to_xy_list
 
         s = 0.
         prev_pt = waypoint_to_point(self.wps[0])
