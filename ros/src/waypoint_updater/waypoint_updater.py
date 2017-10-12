@@ -883,7 +883,8 @@ class WaypointUpdater(object):
         
         self.wps = waypoints.waypoints
         #print (self.wps)
-        self.xy = self.waypoints_to_xy_list(self.wps)
+        #self.xy = self.waypoints_to_xy_list(self.wps) 
+        self.waypoints_to_xy_list(self.wps)
         #waypoints_to_xy_list
 
         s = 0.
